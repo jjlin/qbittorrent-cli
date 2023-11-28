@@ -8,6 +8,7 @@ import (
 	"github.com/ludviglundgren/qbittorrent-cli/internal/config"
 
 	"github.com/autobrr/go-qbittorrent"
+	"github.com/deckarep/golang-set/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -33,7 +34,7 @@ func RunTorrentRemove() *cobra.Command {
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "Display what would be done without actually doing it")
 	command.Flags().BoolVar(&removeAll, "all", false, "Removes all torrents")
 	command.Flags().BoolVar(&deleteFiles, "delete-files", false, "Also delete downloaded files from torrent(s)")
-	command.Flags().StringVar(&filter, "filter", "", "Filter by state: all, active, paused, completed, stalled, errored")
+	command.Flags().StringVar(&filter, "filter", "", "Filter by state: all, downloading, seeding, completed, paused, active, inactive, resumed, \nstalled, stalled_uploading, stalled_downloading, errored")
 	command.Flags().StringSliceVar(&hashes, "hashes", []string{}, "Add hashes as comma separated list")
 	command.Flags().StringSliceVar(&includeCategory, "include-category", []string{}, "Remove torrents from these categories. Comma separated")
 	command.Flags().StringSliceVar(&includeTags, "include-tags", []string{}, "Include torrents with provided tags")
@@ -59,16 +60,24 @@ func RunTorrentRemove() *cobra.Command {
 			os.Exit(1)
 		}
 
-		if removeAll {
-			hashes = []string{"all"}
-		}
-
 		options := qbittorrent.TorrentFilterOptions{}
+
+		var filterHashes mapset.Set[string]
 		if filter != "" {
+			filterHashes = mapset.NewSet[string]()
 			options.Filter = qbittorrent.TorrentFilter(filter)
+			torrents, err := qb.GetTorrentsCtx(ctx, options)
+			if err != nil {
+				log.Fatalf("could not get torrents for filter: %s err: %q\n", filter, err)
+			}
+			for _, torrent := range torrents {
+				filterHashes.Add(torrent.Hash)
+			}
 		}
 
+		var catTagHashes mapset.Set[string]
 		if len(includeCategory) > 0 {
+			catTagHashes = mapset.NewSet[string]()
 			for _, category := range includeCategory {
 				options.Category = category
 
@@ -79,35 +88,53 @@ func RunTorrentRemove() *cobra.Command {
 
 				for _, torrent := range torrents {
 					if len(includeTags) > 0 {
-						if _, validTag := validateTag(includeTags, torrent.Tags); !validTag {
+						if _, hasTag := validateTag(includeTags, torrent.Tags); !hasTag {
 							continue
 						}
 					}
 
 					if len(excludeTags) > 0 {
-						if _, found := validateTag(excludeTags, torrent.Tags); found {
+						if _, hasTag := validateTag(excludeTags, torrent.Tags); hasTag {
 							continue
 						}
 					}
 
-					hashes = append(hashes, torrent.Hash)
+					catTagHashes.Add(torrent.Hash)
 				}
 			}
 		}
 
-		if len(hashes) == 0 {
+		if removeAll {
+			hashes = []string{"all"}
+		} else {
+			// Merge all matching hashes.
+			var hashSet mapset.Set[string]
+
+			if filterHashes != nil && catTagHashes != nil {
+				hashSet = filterHashes.Intersect(catTagHashes)
+			} else if filterHashes != nil {
+				hashSet = filterHashes
+			} else {
+				hashSet = catTagHashes
+			}
+
+			specifiedHashes := mapset.NewSet[string](hashes...)
+			hashes = specifiedHashes.Union(hashSet).ToSlice()
+		}
+
+		if len(hashes) == 0 && !removeAll {
 			log.Println("No torrents found to remove")
 			return
 		}
 
 		if dryRun {
-			if hashes[0] == "all" {
+			if removeAll {
 				log.Println("dry-run: all torrents to be removed")
 			} else {
 				log.Printf("dry-run: (%d) torrents to be removed\n", len(hashes))
 			}
 		} else {
-			if hashes[0] == "all" {
+			if removeAll {
 				log.Println("all torrents to be removed")
 			} else {
 				log.Printf("(%d) torrents to be removed\n", len(hashes))
@@ -122,14 +149,12 @@ func RunTorrentRemove() *cobra.Command {
 				return
 			}
 
-			if hashes[0] == "all" {
+			if removeAll {
 				log.Println("successfully removed all torrents")
 			} else {
 				log.Printf("successfully removed (%d) torrents\n", len(hashes))
 			}
 		}
-
-		log.Printf("torrent(s) successfully deleted\n")
 	}
 
 	return command

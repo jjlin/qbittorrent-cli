@@ -6,6 +6,7 @@ require (
 	github.com/anacrolix/torrent v1.52.5
 	github.com/autobrr/go-qbittorrent v1.5.0
 	github.com/blang/semver v3.5.1+incompatible
+	github.com/deckarep/golang-set/v2 v2.4.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/magiconair/properties v1.8.7
 	github.com/mholt/archiver/v3 v3.5.1
